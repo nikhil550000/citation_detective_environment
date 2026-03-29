@@ -174,4 +174,4 @@ Built as a complete OpenEnv environment submission for Round 1.
 
 ## License
 
-BSD-style license — see [LICENSE](../LICENSE) file.
+MIT License — see [LICENSE](LICENSE) file.
