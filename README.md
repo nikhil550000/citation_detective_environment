@@ -1,3 +1,15 @@
+---
+title: Citation Detective
+emoji: 🔬
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 8000
+tags:
+  - openenv
+license: mit
+---
+
 # Citation Detective — Forensic Peer Reviewer 🔬🔍
 
 An [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environment that trains AI agents to detect **hallucinated, misattributed, and contradicting citations** in scientific manuscripts.
