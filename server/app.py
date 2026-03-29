@@ -45,7 +45,7 @@ except Exception as e:  # pragma: no cover
 try:
     from ..models import ForensicAction, ForensicObservation
     from .citation_detective_environment import CitationDetectiveEnvironment
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     from models import ForensicAction, ForensicObservation
     from server.citation_detective_environment import CitationDetectiveEnvironment
 
