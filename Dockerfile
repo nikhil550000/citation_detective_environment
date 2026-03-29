@@ -10,7 +10,7 @@ RUN apt-get update && \
 # Copy all environment code
 COPY . /app/
 
-# Install Python dependencies directly (no uv needed)
+# Install Python dependencies directly
 RUN pip install --no-cache-dir \
     "fastapi>=0.115.0" \
     "uvicorn[standard]>=0.24.0" \
@@ -28,12 +28,8 @@ RUN pip install --no-cache-dir "openenv-core[core]>=0.2.2" || \
 # Set PYTHONPATH so imports work
 ENV PYTHONPATH="/app:$PYTHONPATH"
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
 # Expose port
 EXPOSE 8000
 
-# Run the server
+# Run the server (no HEALTHCHECK - HF Spaces handles this)
 CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
