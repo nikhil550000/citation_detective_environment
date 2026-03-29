@@ -60,6 +60,42 @@ app = create_app(
 )
 
 
+# Root endpoint for HF Spaces
+@app.get("/", include_in_schema=False)
+async def root():
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse("""<!DOCTYPE html>
+<html><head><title>Citation Detective</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0;
+         display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+  .card { background: #1e293b; border-radius: 16px; padding: 48px; max-width: 600px; text-align: center;
+          box-shadow: 0 25px 50px rgba(0,0,0,0.5); }
+  h1 { font-size: 2rem; margin-bottom: 8px; }
+  .emoji { font-size: 3rem; }
+  p { color: #94a3b8; line-height: 1.6; }
+  .links { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 24px; }
+  a { background: #3b82f6; color: white; padding: 10px 20px; border-radius: 8px;
+      text-decoration: none; font-weight: 500; transition: background 0.2s; }
+  a:hover { background: #2563eb; }
+  .badge { display: inline-block; background: #22c55e; color: #0f172a; padding: 4px 12px;
+           border-radius: 99px; font-size: 0.8rem; font-weight: 600; margin-bottom: 16px; }
+</style></head>
+<body><div class="card">
+  <div class="emoji">🔬🔍</div>
+  <h1>Citation Detective</h1>
+  <div class="badge">● Running</div>
+  <p>Forensic Peer Reviewer — an OpenEnv environment that trains AI agents to detect
+     hallucinated, misattributed, and contradicting citations in scientific manuscripts.</p>
+  <div class="links">
+    <a href="/docs">API Docs</a>
+    <a href="/health">Health</a>
+    <a href="/tasks">Tasks</a>
+    <a href="/schema">Schema</a>
+  </div>
+</div></body></html>""")
+
+
 def main(host: str = "0.0.0.0", port: int = 8000):
     import uvicorn
     uvicorn.run(app, host=host, port=port)
