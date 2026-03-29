@@ -1,0 +1,9 @@
+spec_version: 1
+name: citation_detective
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+description: "Forensic Peer Reviewer — detects hallucinated citations in scientific manuscripts"
+tags:
+  - openenv
