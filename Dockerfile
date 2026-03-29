@@ -10,7 +10,7 @@ RUN apt-get update && \
 # Copy all environment code
 COPY . /app/
 
-# Install Python dependencies directly
+# Install Python dependencies
 RUN pip install --no-cache-dir \
     "fastapi>=0.115.0" \
     "uvicorn[standard]>=0.24.0" \
@@ -20,16 +20,14 @@ RUN pip install --no-cache-dir \
     "openai>=1.0.0" \
     "requests>=2.28.0"
 
-# Install openenv from PyPI
-RUN pip install --no-cache-dir "openenv-core[core]>=0.2.2" || \
-    pip install --no-cache-dir "openenv[core]>=0.2.0" || \
-    echo "Warning: openenv not available on PyPI, continuing without it"
+# Install openenv from GitHub (not on PyPI)
+RUN pip install --no-cache-dir "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git" || \
+    echo "openenv install failed, continuing"
 
 # Set PYTHONPATH so imports work
 ENV PYTHONPATH="/app:$PYTHONPATH"
 
-# Expose port
-EXPOSE 8000
+EXPOSE 7860
 
-# Run the server (no HEALTHCHECK - HF Spaces handles this)
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use port 7860 (HF Spaces default)
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
