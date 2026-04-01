@@ -3,9 +3,9 @@ Graders and mock database for the Citation Detective environment.
 
 Contains:
   - MOCK_DATABASE: hardcoded citation database for deterministic grading
-  - SCENARIOS: the 3 tasks (easy/medium/hard) with manuscript excerpts
+  - SCENARIOS: 5 tasks (easy → hard) with manuscript excerpts
   - search_database(): fuzzy title/author/abstract search
-  - grade_task_1/2/3(): grader functions returning 0.0 - 1.0
+  - grade_task_1/2/3/4/5(): grader functions returning 0.0 - 1.0
   - GRADERS: dict mapping task_id -> grader function
 """
 
@@ -47,6 +47,29 @@ MOCK_DATABASE = {
             "We present a comprehensive survey of transformer architectures "
             "for natural language understanding tasks. Our analysis covers "
             "BERT, GPT, and T5 family models across 12 benchmark tasks."
+        ),
+    },
+    "chen_2020": {
+        "title": "Effect of Online Learning on STEM Student Performance",
+        "authors": ["Chen, L.", "Park, J."],
+        "year": 2020,
+        "abstract": (
+            "Our meta-analysis of 47 studies found that online learning formats "
+            "produced a 12% improvement in standardized test scores for STEM "
+            "subjects compared to traditional in-person instruction. Effect sizes "
+            "varied significantly across disciplines and grade levels."
+        ),
+    },
+    "okafor_2022": {
+        "title": "Social Media Use Correlates with Increased Anxiety in Teenagers",
+        "authors": ["Okafor, A.", "Singh, P."],
+        "year": 2022,
+        "abstract": (
+            "Cross-sectional study of 2,000 teenagers shows a moderate correlation "
+            "between social media use exceeding 3 hours per day and self-reported "
+            "anxiety symptoms (r=0.42, p<0.001). Critically, our cross-sectional "
+            "design cannot establish causality — teenagers with pre-existing anxiety "
+            "may independently seek more social media engagement."
         ),
     },
 }
@@ -175,11 +198,73 @@ SCENARIOS = {
             ),
         },
     },
+    "task_4": {
+        "difficulty": "medium",
+        "description": "The Misquoted Statistic — real paper, real authors, but manuscript fabricates the numerical result.",
+        "manuscript_excerpt": (
+            "The shift to online education has been transformative. Chen and Park's "
+            "landmark meta-analysis demonstrated that online learning achieves "
+            "a 67% improvement in STEM student performance compared to traditional "
+            "in-person instruction [1], establishing online delivery as unequivocally "
+            "superior across all educational contexts.\n\n"
+            "These extraordinary gains have driven widespread adoption of digital "
+            "platforms in universities and K-12 schools alike. Educators cite the "
+            "Chen and Park study [1] as definitive evidence that in-person teaching "
+            "is obsolete for STEM subjects."
+        ),
+        "citations_list": [
+            {
+                "id": 1,
+                "title": "Effect of Online Learning on STEM Student Performance",
+                "authors": ["Chen, L.", "Park, J."],
+                "year": 2020,
+            },
+        ],
+        "ground_truth": {
+            "hallucinated_citation_id": 1,
+            "issue_type": "misquoted_statistic",
+            "explanation": (
+                "The paper by Chen and Park reports a 12% improvement, not 67%. "
+                "The manuscript fabricates the statistic and overstates the paper's "
+                "conclusion — the actual paper notes that effect sizes vary significantly "
+                "and does not claim superiority across all educational contexts."
+            ),
+        },
+    },
+    "task_5": {
+        "difficulty": "hard",
+        "description": "The Causality Reversal — paper shows correlation only, manuscript claims proven causation.",
+        "manuscript_excerpt": (
+            "The mental health crisis among teenagers is now conclusively linked "
+            "to social media. Okafor and Singh's rigorous study [1] proved that "
+            "social media use directly causes anxiety in adolescents, establishing "
+            "a clear causal mechanism supported by their data from 2,000 participants. "
+            "Their findings make it scientifically certain that reducing social media "
+            "use will reduce teenage anxiety.\n\n"
+            "Policy makers and educators should treat this causal relationship as "
+            "established fact when designing interventions. The Okafor-Singh study "
+            "provides the definitive scientific basis for social media regulation."
+        ),
+        "citations_list": [
+            {
+                "id": 1,
+                "title": "Social Media Use Correlates with Increased Anxiety in Teenagers",
+                "authors": ["Okafor, A.", "Singh, P."],
+                "year": 2022,
+            },
+        ],
+        "ground_truth": {
+            "hallucinated_citation_id": 1,
+            "issue_type": "causality_reversal",
+            "explanation": (
+                "The Okafor & Singh paper explicitly states its cross-sectional design "
+                "'cannot establish causality'. The manuscript falsely claims the study "
+                "'proved' causation and calls it 'scientifically certain'. "
+                "This is a direct misrepresentation of what the paper concluded."
+            ),
+        },
+    },
 }
-
-
-# ---------------------------------------------------------------------------
-# Database search function
 # ---------------------------------------------------------------------------
 
 def search_database(query: str) -> str:
@@ -329,6 +414,85 @@ def grade_task_3(action_dict: Dict[str, Any]) -> float:
     return 0.0
 
 
+def grade_task_4(action_dict: Dict[str, Any]) -> float:
+    """
+    Grade task 4 — The Misquoted Statistic (medium).
+
+    Full credit (1.0): correct citation_id + reason mentions the wrong number
+    High (0.7): correct citation_id + mentions fabricated/misquoted/statistic
+    Partial (0.5): correct citation_id, generic reason
+    Low (0.3): wrong citation_id flagged
+    """
+    gt = SCENARIOS["task_4"]["ground_truth"]
+    action_type = str(action_dict.get("action_type", "")).strip().lower()
+    citation_id = action_dict.get("citation_id", -1)
+    reason = str(action_dict.get("reason", "")).strip().lower()
+
+    if action_type == "approve":
+        return 0.0
+
+    if action_type == "flag_hallucination":
+        if citation_id == gt["hallucinated_citation_id"]:
+            number_keywords = ["12", "67", "12%", "67%", "percent", "statistic"]
+            fabrication_keywords = ["fabricat", "misquot", "incorrect", "wrong number",
+                                    "different number", "inaccurate", "false", "distort"]
+
+            has_number = any(kw in reason for kw in number_keywords)
+            has_fabrication = any(kw in reason for kw in fabrication_keywords)
+
+            if has_number and has_fabrication:
+                return 1.0
+            elif has_number or has_fabrication:
+                return 0.7
+            else:
+                return 0.5
+        else:
+            return 0.3
+
+    return 0.0
+
+
+def grade_task_5(action_dict: Dict[str, Any]) -> float:
+    """
+    Grade task 5 — The Causality Reversal (hard).
+
+    Full credit (1.0): correct citation_id + reason mentions causation vs correlation
+    High (0.7): correct citation_id + reason mentions cannot/does not establish causality
+    Partial (0.5): correct citation_id, generic reason about misrepresentation
+    Low (0.3): wrong citation_id
+    """
+    gt = SCENARIOS["task_5"]["ground_truth"]
+    action_type = str(action_dict.get("action_type", "")).strip().lower()
+    citation_id = action_dict.get("citation_id", -1)
+    reason = str(action_dict.get("reason", "")).strip().lower()
+
+    if action_type == "approve":
+        return 0.0
+
+    if action_type == "flag_hallucination":
+        if citation_id == gt["hallucinated_citation_id"]:
+            causality_keywords = ["causal", "cause", "causation", "correlation", "correlat"]
+            cannot_keywords = ["cannot", "can't", "does not establish", "no causal",
+                               "cross-sectional", "design", "not proven", "not causal"]
+            # Check for negation: if reason says 'not causal' that's correct
+            # If reason says 'proves causality' without negation, that's wrong
+            has_causality = any(kw in reason for kw in causality_keywords)
+            has_cannot = any(kw in reason for kw in cannot_keywords)
+
+            if has_causality and has_cannot:
+                return 1.0
+            elif has_cannot:
+                return 0.7
+            elif has_causality:
+                return 0.5
+            else:
+                return 0.5
+        else:
+            return 0.3
+
+    return 0.0
+
+
 # ---------------------------------------------------------------------------
 # Grader registry
 # ---------------------------------------------------------------------------
@@ -337,4 +501,6 @@ GRADERS = {
     "task_1": grade_task_1,
     "task_2": grade_task_2,
     "task_3": grade_task_3,
+    "task_4": grade_task_4,
+    "task_5": grade_task_5,
 }

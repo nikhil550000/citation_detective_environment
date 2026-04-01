@@ -197,8 +197,16 @@ async def run_grader(request: Request):
 
 @app.post("/baseline")
 async def run_baseline(request: Request):
-    """Run baseline LLM agent against all tasks."""
+    """Run baseline LLM agent against all tasks using a proper RL loop.
+
+    Flow per task:
+      1. env.reset(task_id)          — get manuscript + citations
+      2. env.step(search) x N        — search each citation in DB
+      3. LLM analyses search results — decides action
+      4. env.step(flag/approve)      — terminal action, graded
+    """
     import os
+    import re
     import json as _json
 
     results = {}
@@ -218,13 +226,11 @@ async def run_baseline(request: Request):
             model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
             gemini_model = genai.GenerativeModel(model)
             provider = "gemini"
-
         elif openai_key:
             from openai import OpenAI
             client = OpenAI(api_key=openai_key)
             model = os.environ.get("OPENAI_MODEL", "gpt-4o")
             provider = "openai"
-
         elif azure_key:
             from openai import AzureOpenAI
             client = AzureOpenAI(
@@ -234,123 +240,138 @@ async def run_baseline(request: Request):
             )
             model = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
             provider = "azure"
-
         else:
             return JSONResponse(
                 status_code=500,
                 content={"error": "No API key found. Set GEMINI_API_KEY, OPENAI_API_KEY, or AZURE_OPENAI_API_KEY."},
             )
 
-        # Run each task
-        for task_id, scenario in SCENARIOS.items():
-            citations_text = ""
-            for c in scenario["citations_list"]:
-                authors = ", ".join(c["authors"])
-                citations_text += f"  [{c['id']}] {c['title']} — {authors} ({c['year']})\n"
+        def call_llm(prompt: str) -> str:
+            if provider == "gemini":
+                resp = gemini_model.generate_content(
+                    prompt,
+                    generation_config={"temperature": 0, "max_output_tokens": 1024,
+                                       "response_mime_type": "application/json"},
+                )
+                return resp.text.strip()
+            else:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0, max_tokens=512,
+                )
+                return resp.choices[0].message.content.strip()
 
-            prompt = f"""You are a forensic peer reviewer analysing scientific manuscripts for hallucinated citations.
+        def parse_action(raw: str) -> dict:
+            """Parse LLM JSON response with fallback strategies."""
+            raw = raw.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1][4:] if len(parts) >= 2 else raw
+            try:
+                return _json.loads(raw)
+            except Exception:
+                pass
+            m = re.search(r'\{[^{}]*"action_type"[^{}]*\}', raw, re.DOTALL)
+            if m:
+                try:
+                    return _json.loads(m.group())
+                except Exception:
+                    pass
+            return {
+                "action_type": (re.search(r'"action_type"\s*:\s*"([^"]+)"', raw) or type('', (), {'group': lambda s, x: 'approve'})()).group(1),
+                "citation_id": int(m.group(1)) if (m := re.search(r'"citation_id"\s*:\s*(\d+)', raw)) else -1,
+                "reason": (re.search(r'"reason"\s*:\s*"([^"]*)"', raw) or type('', (), {'group': lambda s, x: raw[:200]})()).group(1),
+            }
 
-MANUSCRIPT EXCERPT:
-{scenario['manuscript_excerpt']}
+        # RL loop: one CitationDetectiveEnvironment instance per task
+        for task_id in SCENARIOS:
+            env = CitationDetectiveEnvironment()
+
+            # Step 1: Reset — get manuscript and citations
+            obs = env.reset(task_id=task_id)
+            citations = obs.citations_list
+            manuscript = obs.manuscript_excerpt
+            search_history = ""
+            step_count = 0
+            cumulative_reward = 0.0
+
+            # Step 2: Search each citation via env.step()
+            for citation in citations:
+                search_action = ForensicAction(
+                    task_id=task_id,
+                    action_type="search",
+                    query=citation["title"],
+                    search_history=search_history,
+                    step_count=step_count,
+                    cumulative_reward=cumulative_reward,
+                )
+                obs = env.step(search_action)
+                search_history += f"\n--- Search: '{citation['title']}' ---\n{obs.search_results}\n"
+                step_count = obs.step_count
+                cumulative_reward += obs.reward
+
+            # Step 3: LLM analyses all search results and decides
+            citations_text = "\n".join(
+                f"  [{c['id']}] {c['title']} — {', '.join(c['authors'])} ({c['year']})"
+                for c in citations
+            )
+            prompt = f"""You are a forensic peer reviewer. Analyze the manuscript for hallucinated citations.
+
+MANUSCRIPT:
+{manuscript}
 
 CITATIONS:
 {citations_text}
 
-INSTRUCTIONS:
-1. Search the citation database mentally for each cited paper.
-2. Check if each citation exists, has correct authors/year, and if the manuscript's claims match the cited paper.
-3. If you find a problem, flag the specific citation.
+DATABASE SEARCH RESULTS:
+{search_history}
 
-Respond with a JSON object:
-{{
-  "action_type": "flag_hallucination",
-  "citation_id": <int — the ID of the problematic citation>,
-  "reason": "<1-2 sentence explanation>"
-}}
+Based on the search results, determine if any citation is:
+- A ghost paper (not found in the database)
+- Misattributed (wrong authors or year compared to DB entry)
+- Contradicting (manuscript claim contradicts what the cited paper says)
+- Misquoted statistic (manuscript reports a different number than the cited paper)
+- Causality reversal (paper shows correlation only, manuscript claims proven causation)
 
-If all citations are correct, respond:
-{{
-  "action_type": "approve",
-  "citation_id": -1,
-  "reason": "All citations verified"
-}}
+Respond with JSON only:
+{{"action_type": "flag_hallucination", "citation_id": <int>, "reason": "<1-2 sentence explanation>"}}
+Or if all citations are correct:
+{{"action_type": "approve", "citation_id": -1, "reason": "All citations verified"}}"""
 
-Respond with JSON only. No other text."""
+            raw = call_llm(prompt)
+            action_dict = parse_action(raw)
 
-            # Model inference
-            if provider == "gemini":
-                response = gemini_model.generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": 0,
-                        "max_output_tokens": 1024,
-                        "response_mime_type": "application/json",
-                    },
-                )
-                raw = response.text.strip()
-
-            elif provider in ["openai", "azure"]:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0,
-                    max_tokens=512,
-                )
-                raw = response.choices[0].message.content.strip()
-
-            # Clean markdown code fences
-            if raw.startswith("```"):
-                parts = raw.split("```")
-                if len(parts) >= 2:
-                    raw = parts[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
-            raw = raw.strip()
-
-            # Parse JSON — try multiple strategies
-            action_dict = None
-            import re
-            try:
-                action_dict = _json.loads(raw)
-            except Exception:
-                # Try to find complete JSON object
-                json_match = re.search(r'\{[^{}]*"action_type"[^{}]*\}', raw, re.DOTALL)
-                if json_match:
-                    try:
-                        action_dict = _json.loads(json_match.group())
-                    except Exception:
-                        pass
-
-            # Handle truncated JSON — extract fields with regex
-            if action_dict is None:
-                action_type_m = re.search(r'"action_type"\s*:\s*"([^"]+)"', raw)
-                citation_id_m = re.search(r'"citation_id"\s*:\s*(\d+)', raw)
-                reason_m = re.search(r'"reason"\s*:\s*"([^"]*)"', raw)
-                action_dict = {
-                    "action_type": action_type_m.group(1) if action_type_m else "approve",
-                    "citation_id": int(citation_id_m.group(1)) if citation_id_m else -1,
-                    "reason": reason_m.group(1) if reason_m else raw[:200],
-                }
-
-            score = GRADERS[task_id](action_dict)
+            # Step 4: Submit terminal action via env.step()
+            terminal_action = ForensicAction(
+                task_id=task_id,
+                action_type=action_dict.get("action_type", "approve"),
+                citation_id=action_dict.get("citation_id", -1),
+                reason=action_dict.get("reason", ""),
+                search_history=search_history,
+                step_count=step_count,
+                cumulative_reward=cumulative_reward,
+            )
+            obs = env.step(terminal_action)
 
             results[task_id] = {
-                "difficulty": scenario["difficulty"],
-                "score": score,
-                "action_type": action_dict.get("action_type", ""),
-                "citation_id": action_dict.get("citation_id", -1),
-                "reason": action_dict.get("reason", ""),
-                "raw_response": raw,
+                "difficulty": SCENARIOS[task_id]["difficulty"],
+                "reward": obs.reward,
+                "action_type": terminal_action.action_type,
+                "citation_id": terminal_action.citation_id,
+                "reason": terminal_action.reason,
+                "steps_taken": obs.step_count,
             }
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e), "partial_results": results})
+        import traceback
+        return JSONResponse(status_code=500, content={"error": str(e), "traceback": traceback.format_exc(), "partial_results": results})
 
-    overall = sum(r["score"] for r in results.values()) / max(len(results), 1)
+    overall = sum(r["reward"] for r in results.values()) / max(len(results), 1)
 
     return JSONResponse(content={
         "model": model,
         "provider": provider,
-        "overall_score": round(overall, 4),
+        "overall_reward": round(overall, 4),
         "task_results": results,
     })
