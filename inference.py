@@ -103,6 +103,8 @@ def run_task(base_url: str, task_id: str) -> Dict[str, Any]:
     manuscript = obs["manuscript_excerpt"]
     citations = obs["citations_list"]
     search_history = ""
+    step_count = 0
+    cumulative_reward = 0.0
 
     # Step 2: Search each citation
     for citation in citations:
@@ -114,11 +116,16 @@ def run_task(base_url: str, task_id: str) -> Dict[str, Any]:
                 "action_type": "search",
                 "query": query,
                 "search_history": search_history,
+                "step_count": step_count,
+                "cumulative_reward": cumulative_reward,
             }},
             timeout=30,
         ).json()
-        search_result = step_resp["observation"].get("search_results", "")
+        obs = step_resp["observation"]
+        search_result = obs.get("search_results", "")
         search_history += f"\n--- Search: '{query}' ---\n{search_result}\n"
+        step_count = obs.get("step_count", step_count + 1)
+        cumulative_reward = step_resp.get("reward", 0.0)
 
     # Step 3: LLM analysis
     citations_text = ""
@@ -170,6 +177,8 @@ JSON only, no other text."""
             "citation_id": action_dict.get("citation_id", -1),
             "reason": action_dict.get("reason", ""),
             "search_history": search_history,
+            "step_count": step_count,
+            "cumulative_reward": cumulative_reward,
         }},
         timeout=30,
     ).json()

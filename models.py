@@ -54,6 +54,16 @@ class ForensicAction(Action):
                     "passed back by the agent so the environment can track "
                     "history in stateless HTTP mode.",
     )
+    step_count: int = Field(
+        default=0,
+        description="Steps taken so far — passed back by client each step "
+                    "to track progress across stateless HTTP calls.",
+    )
+    cumulative_reward: float = Field(
+        default=0.0,
+        description="Running reward total — passed back by client each step "
+                    "to accumulate search rewards across stateless HTTP calls.",
+    )
 
 
 class ForensicObservation(Observation):

@@ -84,8 +84,13 @@ class CitationDetectiveEnvironment(Environment):
         action_type='search': query database, return results
         action_type='flag_hallucination': terminal — grade and end
         action_type='approve': terminal — penalize missed hallucination
+
+        NOTE: For stateless HTTP, step_count and cumulative_reward are
+        hydrated from the action payload (client passes them back each call).
         """
-        self._state.step_count += 1
+        # Hydrate state from client — bypasses stateless HTTP env recreation
+        self._state.step_count = action.step_count + 1
+        self._cumulative_reward = action.cumulative_reward
 
         # Use task_id from action (stateless HTTP fix)
         task_id = action.task_id
