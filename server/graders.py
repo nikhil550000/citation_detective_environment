@@ -5,8 +5,26 @@ Contains:
   - MOCK_DATABASE: hardcoded citation database for deterministic grading
   - SCENARIOS: 5 tasks (easy → hard) with manuscript excerpts
   - search_database(): fuzzy title/author/abstract search
-  - grade_task_1/2/3/4/5(): grader functions returning 0.0 - 1.0
+  - grade_task_1/2/3/4/5(): composite grader functions
   - GRADERS: dict mapping task_id -> grader function
+
+Reward Design Philosophy:
+  Each grader returns a COMPOSITE score in the open interval (0, 1)
+  computed from three orthogonal learning dimensions:
+
+    score = BASE + IDENTIFICATION + REASON_QUALITY
+
+  - BASE (0.05):       Minimum for attempting any action
+  - IDENTIFICATION:     Did the agent find the right problematic citation?
+                        Correct citation: +0.45, Wrong citation: +0.15, Approve: +0.0
+  - REASON_QUALITY:     Does the explanation demonstrate real understanding?
+                        Excellent (multiple key insights): +0.40
+                        Good (one key insight):            +0.25
+                        Partial (vague but relevant):      +0.15
+                        None (no useful reasoning):        +0.05
+
+  Natural range: [0.05, 0.90] — never reaches 0.0 or 1.0
+  This provides a smooth, learnable gradient for RL training.
 """
 
 from typing import Any, Dict, List
@@ -265,6 +283,10 @@ SCENARIOS = {
         },
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Database search
 # ---------------------------------------------------------------------------
 
 def search_database(query: str) -> str:
@@ -285,11 +307,8 @@ def search_database(query: str) -> str:
     results: List[str] = []
 
     for key, entry in MOCK_DATABASE.items():
-        # Check title
         title_match = query_lower in entry["title"].lower()
-        # Check authors
         author_match = any(query_lower in a.lower() for a in entry["authors"])
-        # Check abstract
         abstract_match = query_lower in entry["abstract"].lower()
 
         if title_match or author_match or abstract_match:
@@ -308,189 +327,256 @@ def search_database(query: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Grader functions — each returns float 0.0 to 1.0
+# Composite grader functions
+#
+# Each returns a float strictly in (0, 1):
+#   score = BASE(0.05) + IDENTIFICATION(0..0.45) + REASON_QUALITY(0..0.40)
+#
+# The three-component design ensures:
+#   - An agent always gets SOME signal (base > 0)
+#   - A perfect answer never reaches 1.0 (max = 0.90)
+#   - The gradient is smooth across many distinct quality levels
 # ---------------------------------------------------------------------------
+
+BASE_SCORE = 0.05          # minimum for any attempt
+ID_CORRECT = 0.45          # bonus for correct citation ID
+ID_WRONG_FLAG = 0.15       # partial credit for flagging (wrong citation)
+ID_APPROVE = 0.0           # no credit for approving a hallucination
+
+REASON_EXCELLENT = 0.40    # multiple key insights demonstrated
+REASON_GOOD = 0.25         # one key insight
+REASON_PARTIAL = 0.15      # vague but relevant
+REASON_MINIMAL = 0.05      # no useful reasoning but action was taken
+
+
+def _compute_score(identification: float, reason_quality: float) -> float:
+    """Composite score from identification accuracy + reason quality."""
+    raw = BASE_SCORE + identification + reason_quality
+    # Safety clamp — should never trigger with our constants, but guarantees (0, 1)
+    return min(max(raw, 0.01), 0.99)
+
 
 def grade_task_1(action_dict: Dict[str, Any]) -> float:
     """
     Grade task 1 — The Ghost Paper (easy).
 
-    Full credit (1.0): flag_hallucination on citation_id=2
-    Partial (0.3): flag_hallucination on wrong citation_id
-    Penalty (-0.5): flag wrong citation (clamped to 0.0)
+    The agent should flag citation_id=2 as a fabricated reference
+    because it doesn't exist in the database.
     """
     gt = SCENARIOS["task_1"]["ground_truth"]
     action_type = str(action_dict.get("action_type", "")).strip().lower()
     citation_id = action_dict.get("citation_id", -1)
+    reason = str(action_dict.get("reason", "")).strip().lower()
 
-    if action_type == "approve":
-        return 0.0  # -1.0 reward handled in environment, grader returns 0.0
+    # Identification dimension
+    if action_type == "flag_hallucination" and citation_id == gt["hallucinated_citation_id"]:
+        identification = ID_CORRECT
+    elif action_type == "flag_hallucination":
+        identification = ID_WRONG_FLAG
+    else:
+        identification = ID_APPROVE
 
-    if action_type == "flag_hallucination":
-        if citation_id == gt["hallucinated_citation_id"]:
-            return 1.0
+    # Reason dimension (only meaningful for correct identification)
+    ghost_keywords = ["not found", "not exist", "no result", "fabricat", "ghost",
+                      "fake", "doesn't exist", "does not exist", "no match",
+                      "no database", "no entry", "couldn't find", "not in database"]
+
+    if identification == ID_CORRECT:
+        hits = sum(1 for kw in ghost_keywords if kw in reason)
+        if hits >= 2:
+            reason_q = REASON_EXCELLENT
+        elif hits == 1:
+            reason_q = REASON_GOOD
+        elif len(reason) > 20:
+            reason_q = REASON_PARTIAL
         else:
-            return 0.3  # flagged something, just wrong one
+            reason_q = REASON_MINIMAL
+    elif identification == ID_WRONG_FLAG:
+        reason_q = REASON_MINIMAL
+    else:
+        reason_q = 0.0
 
-    return 0.0
+    return _compute_score(identification, reason_q)
 
 
 def grade_task_2(action_dict: Dict[str, Any]) -> float:
     """
     Grade task 2 — The Identity Theft (medium).
 
-    Full credit (1.0): correct citation_id + reason mentions author/year mismatch
-    High (0.7): correct citation_id + reason mentions either author or year
-    Partial (0.5): correct citation_id, no relevant reason
-    Low (0.3): wrong citation_id flagged
+    The agent should flag citation_id=1 because the authors and year
+    don't match the database entry.
     """
     gt = SCENARIOS["task_2"]["ground_truth"]
     action_type = str(action_dict.get("action_type", "")).strip().lower()
     citation_id = action_dict.get("citation_id", -1)
     reason = str(action_dict.get("reason", "")).strip().lower()
 
-    if action_type == "approve":
-        return 0.0
+    if action_type == "flag_hallucination" and citation_id == gt["hallucinated_citation_id"]:
+        identification = ID_CORRECT
+    elif action_type == "flag_hallucination":
+        identification = ID_WRONG_FLAG
+    else:
+        identification = ID_APPROVE
 
-    if action_type == "flag_hallucination":
-        if citation_id == gt["hallucinated_citation_id"]:
-            # Check reason quality
-            author_keywords = ["author", "brown", "davis", "johnson", "smith", "lee", "wrong author", "different author"]
-            year_keywords = ["year", "2018", "2021", "wrong year", "different year", "date"]
+    author_keywords = ["author", "brown", "davis", "johnson", "smith", "lee",
+                       "wrong author", "different author", "misattribut",
+                       "not the real author", "attributed"]
+    year_keywords = ["year", "2018", "2021", "wrong year", "different year",
+                     "date", "published"]
 
-            has_author = any(kw in reason for kw in author_keywords)
-            has_year = any(kw in reason for kw in year_keywords)
-
-            if has_author and has_year:
-                return 1.0
-            elif has_author or has_year:
-                return 0.7
-            else:
-                return 0.5
+    if identification == ID_CORRECT:
+        has_author = any(kw in reason for kw in author_keywords)
+        has_year = any(kw in reason for kw in year_keywords)
+        if has_author and has_year:
+            reason_q = REASON_EXCELLENT
+        elif has_author or has_year:
+            reason_q = REASON_GOOD
+        elif len(reason) > 20:
+            reason_q = REASON_PARTIAL
         else:
-            return 0.3
+            reason_q = REASON_MINIMAL
+    elif identification == ID_WRONG_FLAG:
+        reason_q = REASON_MINIMAL
+    else:
+        reason_q = 0.0
 
-    return 0.0
+    return _compute_score(identification, reason_q)
 
 
 def grade_task_3(action_dict: Dict[str, Any]) -> float:
     """
     Grade task 3 — The Contradiction (hard).
 
-    Full credit (1.0): correct citation_id + reason mentions contradiction
-    High (0.7): correct citation_id + reason mentions the drug/effect
-    Partial (0.5): correct citation_id, generic reason
-    Low (0.3): wrong citation_id flagged
+    The agent should flag citation_id=1 because the manuscript claims
+    Drug X works, but the paper says it has no significant effect.
     """
     gt = SCENARIOS["task_3"]["ground_truth"]
     action_type = str(action_dict.get("action_type", "")).strip().lower()
     citation_id = action_dict.get("citation_id", -1)
     reason = str(action_dict.get("reason", "")).strip().lower()
 
-    if action_type == "approve":
-        return 0.0  # -0.5 reward for task_3 handled in environment
+    if action_type == "flag_hallucination" and citation_id == gt["hallucinated_citation_id"]:
+        identification = ID_CORRECT
+    elif action_type == "flag_hallucination":
+        identification = ID_WRONG_FLAG
+    else:
+        identification = ID_APPROVE
 
-    if action_type == "flag_hallucination":
-        if citation_id == gt["hallucinated_citation_id"]:
-            contradiction_keywords = [
-                "contradict", "opposite", "conflict", "inconsistent",
-                "no significant", "no effect", "does not support",
-                "misrepresent", "contrary", "disagree",
-            ]
-            drug_keywords = ["drug x", "disease y", "p=0.43", "placebo", "no significant effect"]
+    contradiction_keywords = ["contradict", "opposite", "conflict", "inconsistent",
+                              "no significant", "no effect", "does not support",
+                              "misrepresent", "contrary", "disagree", "mismatch"]
+    drug_keywords = ["drug x", "disease y", "p=0.43", "placebo",
+                     "no significant effect", "no improvement"]
 
-            has_contradiction = any(kw in reason for kw in contradiction_keywords)
-            has_drug = any(kw in reason for kw in drug_keywords)
-
-            if has_contradiction:
-                return 1.0
-            elif has_drug:
-                return 0.7
-            else:
-                return 0.5
+    if identification == ID_CORRECT:
+        has_contradiction = any(kw in reason for kw in contradiction_keywords)
+        has_drug = any(kw in reason for kw in drug_keywords)
+        if has_contradiction and has_drug:
+            reason_q = REASON_EXCELLENT
+        elif has_contradiction:
+            reason_q = REASON_GOOD
+        elif has_drug:
+            reason_q = REASON_PARTIAL + 0.05  # 0.20 — knows the topic
+        elif len(reason) > 20:
+            reason_q = REASON_PARTIAL
         else:
-            return 0.3
+            reason_q = REASON_MINIMAL
+    elif identification == ID_WRONG_FLAG:
+        reason_q = REASON_MINIMAL
+    else:
+        reason_q = 0.0
 
-    return 0.0
+    return _compute_score(identification, reason_q)
 
 
 def grade_task_4(action_dict: Dict[str, Any]) -> float:
     """
     Grade task 4 — The Misquoted Statistic (medium).
 
-    Full credit (1.0): correct citation_id + reason mentions the wrong number
-    High (0.7): correct citation_id + mentions fabricated/misquoted/statistic
-    Partial (0.5): correct citation_id, generic reason
-    Low (0.3): wrong citation_id flagged
+    The agent should flag citation_id=1 because the manuscript claims
+    67% improvement when the paper says 12%.
     """
     gt = SCENARIOS["task_4"]["ground_truth"]
     action_type = str(action_dict.get("action_type", "")).strip().lower()
     citation_id = action_dict.get("citation_id", -1)
     reason = str(action_dict.get("reason", "")).strip().lower()
 
-    if action_type == "approve":
-        return 0.0
+    if action_type == "flag_hallucination" and citation_id == gt["hallucinated_citation_id"]:
+        identification = ID_CORRECT
+    elif action_type == "flag_hallucination":
+        identification = ID_WRONG_FLAG
+    else:
+        identification = ID_APPROVE
 
-    if action_type == "flag_hallucination":
-        if citation_id == gt["hallucinated_citation_id"]:
-            number_keywords = ["12", "67", "12%", "67%", "percent", "statistic"]
-            fabrication_keywords = ["fabricat", "misquot", "incorrect", "wrong number",
-                                    "different number", "inaccurate", "false", "distort"]
+    number_keywords = ["12", "67", "12%", "67%"]
+    fabrication_keywords = ["fabricat", "misquot", "incorrect", "wrong number",
+                            "inflat", "exaggerat", "overstat", "inaccurate",
+                            "false", "distort", "different number", "actual"]
 
-            has_number = any(kw in reason for kw in number_keywords)
-            has_fabrication = any(kw in reason for kw in fabrication_keywords)
-
-            if has_number and has_fabrication:
-                return 1.0
-            elif has_number or has_fabrication:
-                return 0.7
-            else:
-                return 0.5
+    if identification == ID_CORRECT:
+        has_number = any(kw in reason for kw in number_keywords)
+        has_fabrication = any(kw in reason for kw in fabrication_keywords)
+        if has_number and has_fabrication:
+            reason_q = REASON_EXCELLENT
+        elif has_number:
+            reason_q = REASON_GOOD  # knows the actual numbers
+        elif has_fabrication:
+            reason_q = REASON_PARTIAL + 0.05  # 0.20 — knows it's fabricated
+        elif len(reason) > 20:
+            reason_q = REASON_PARTIAL
         else:
-            return 0.3
+            reason_q = REASON_MINIMAL
+    elif identification == ID_WRONG_FLAG:
+        reason_q = REASON_MINIMAL
+    else:
+        reason_q = 0.0
 
-    return 0.0
+    return _compute_score(identification, reason_q)
 
 
 def grade_task_5(action_dict: Dict[str, Any]) -> float:
     """
     Grade task 5 — The Causality Reversal (hard).
 
-    Full credit (1.0): correct citation_id + reason mentions causation vs correlation
-    High (0.7): correct citation_id + reason mentions cannot/does not establish causality
-    Partial (0.5): correct citation_id, generic reason about misrepresentation
-    Low (0.3): wrong citation_id
+    The agent should flag citation_id=1 because the paper only shows
+    correlation but the manuscript claims proven causation.
     """
     gt = SCENARIOS["task_5"]["ground_truth"]
     action_type = str(action_dict.get("action_type", "")).strip().lower()
     citation_id = action_dict.get("citation_id", -1)
     reason = str(action_dict.get("reason", "")).strip().lower()
 
-    if action_type == "approve":
-        return 0.0
+    if action_type == "flag_hallucination" and citation_id == gt["hallucinated_citation_id"]:
+        identification = ID_CORRECT
+    elif action_type == "flag_hallucination":
+        identification = ID_WRONG_FLAG
+    else:
+        identification = ID_APPROVE
 
-    if action_type == "flag_hallucination":
-        if citation_id == gt["hallucinated_citation_id"]:
-            causality_keywords = ["causal", "cause", "causation", "correlation", "correlat"]
-            cannot_keywords = ["cannot", "can't", "does not establish", "no causal",
-                               "cross-sectional", "design", "not proven", "not causal"]
-            # Check for negation: if reason says 'not causal' that's correct
-            # If reason says 'proves causality' without negation, that's wrong
-            has_causality = any(kw in reason for kw in causality_keywords)
-            has_cannot = any(kw in reason for kw in cannot_keywords)
+    causality_keywords = ["causal", "cause", "causation", "correlation", "correlat"]
+    cannot_keywords = ["cannot", "can't", "does not establish", "no causal",
+                       "cross-sectional", "not proven", "not causal",
+                       "only correlation", "doesn't prove", "does not prove"]
 
-            if has_causality and has_cannot:
-                return 1.0
-            elif has_cannot:
-                return 0.7
-            elif has_causality:
-                return 0.5
-            else:
-                return 0.5
+    if identification == ID_CORRECT:
+        has_causality = any(kw in reason for kw in causality_keywords)
+        has_cannot = any(kw in reason for kw in cannot_keywords)
+        if has_causality and has_cannot:
+            reason_q = REASON_EXCELLENT
+        elif has_cannot:
+            reason_q = REASON_GOOD
+        elif has_causality:
+            reason_q = REASON_PARTIAL  # mentions causality but not the limitation
+        elif len(reason) > 20:
+            reason_q = REASON_PARTIAL
         else:
-            return 0.3
+            reason_q = REASON_MINIMAL
+    elif identification == ID_WRONG_FLAG:
+        reason_q = REASON_MINIMAL
+    else:
+        reason_q = 0.0
 
-    return 0.0
+    return _compute_score(identification, reason_q)
 
 
 # ---------------------------------------------------------------------------

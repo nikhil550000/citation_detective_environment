@@ -165,36 +165,30 @@ class CitationDetectiveEnvironment(Environment):
             grader = GRADERS[task_id]
             score = grader(action_dict)
 
-            # Reward: correct flag → +1.0 * score, wrong citation → -0.5
+            # Terminal reward IS the grader score (always in (0, 1))
+            # Search rewards were intermediate signals; the grader score
+            # is the definitive episode outcome
             gt_id = scenario["ground_truth"]["hallucinated_citation_id"]
-            if action.citation_id == gt_id:
-                terminal_reward = score  # 0.5 to 1.0 depending on reason
-            else:
-                terminal_reward = -0.5  # false accusation
-
-            total_reward = self._cumulative_reward + terminal_reward
 
             return ForensicObservation(
                 manuscript_excerpt=scenario["manuscript_excerpt"],
                 citations_list=scenario["citations_list"],
                 search_results=(
                     f"Episode complete. "
-                    f"Grader score: {score:.4f} / 1.0. "
-                    f"Terminal reward: {terminal_reward:+.2f}. "
-                    f"Total reward: {total_reward:+.2f}."
+                    f"Grader score: {score:.4f}. "
+                    f"Correct citation: {gt_id}. "
+                    f"Your citation: {action.citation_id}."
                 ),
                 step_count=self._state.step_count,
                 task_id=task_id,
                 done=True,
-                reward=total_reward,
+                reward=score,
                 metadata={
                     "grader_score": score,
-                    "terminal_reward": terminal_reward,
-                    "cumulative_search_reward": self._cumulative_reward,
-                    "total_reward": total_reward,
                     "citation_id_submitted": action.citation_id,
                     "reason_submitted": action.reason,
                     "correct_citation_id": gt_id,
+                    "cumulative_search_reward": self._cumulative_reward,
                 },
             )
 
@@ -204,14 +198,15 @@ class CitationDetectiveEnvironment(Environment):
         if action_type == "approve":
             self._episode_done = True
 
-            # All 3 tasks have hallucinations, so approve is always wrong
-            # But task_3 (contradiction) is more subtle → milder penalty
-            if task_id == "task_3":
-                terminal_reward = -0.5  # subtle contradiction missed
-            else:
-                terminal_reward = -1.0  # obvious hallucination missed
-
-            total_reward = self._cumulative_reward + terminal_reward
+            # Run through grader — approve gets low score (0.05) since
+            # all tasks have hallucinations
+            action_dict = {
+                "action_type": action.action_type,
+                "citation_id": action.citation_id,
+                "reason": action.reason,
+            }
+            grader = GRADERS[task_id]
+            score = grader(action_dict)
 
             return ForensicObservation(
                 manuscript_excerpt=scenario["manuscript_excerpt"],
@@ -220,19 +215,16 @@ class CitationDetectiveEnvironment(Environment):
                     f"Episode complete. "
                     f"You approved the manuscript, but it contained a "
                     f"hallucinated/problematic citation. "
-                    f"Terminal reward: {terminal_reward:+.2f}. "
-                    f"Total reward: {total_reward:+.2f}."
+                    f"Grader score: {score:.4f}."
                 ),
                 step_count=self._state.step_count,
                 task_id=task_id,
                 done=True,
-                reward=total_reward,
+                reward=score,
                 metadata={
-                    "grader_score": 0.0,
-                    "terminal_reward": terminal_reward,
-                    "cumulative_search_reward": self._cumulative_reward,
-                    "total_reward": total_reward,
+                    "grader_score": score,
                     "issue_type": scenario["ground_truth"]["issue_type"],
+                    "cumulative_search_reward": self._cumulative_reward,
                 },
             )
 

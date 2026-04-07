@@ -240,17 +240,24 @@ Or if all citations are correct:
             rewards.append(term_reward)
             log_step(step=steps_taken, action=term_action_str, reward=term_reward, done=term_done, error=None)
 
-        # Compute score: normalize to [0, 1]
-        # Terminal reward is the main signal (can range from -1.0 to +1.1)
-        # We use the final step's reward, clamped to [0, 1]
-        final_reward = rewards[-1] if rewards else 0.0
-        score = min(max(final_reward, 0.0), 1.0)
-        success = score > 0.0
+        # Episode score = terminal grader score
+        # The grader returns a composite score in (0.05, 0.90) by design:
+        #   score = BASE(0.05) + IDENTIFICATION(0..0.45) + REASON(0..0.40)
+        # No clamping needed — the reward architecture guarantees (0, 1)
+        final_reward = rewards[-1] if rewards else 0.05
+        score = final_reward
+        # Safety: ensure strictly (0, 1) in case of edge cases
+        if score <= 0.0:
+            score = 0.01
+        if score >= 1.0:
+            score = 0.99
+        success = score > 0.10
 
     except Exception as exc:
         print(f"[DEBUG] Task {task_id} error: {exc}", flush=True)
         if not rewards:
-            rewards.append(0.0)
+            rewards.append(0.05)
+        score = 0.05
         steps_taken = max(steps_taken, 1)
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
