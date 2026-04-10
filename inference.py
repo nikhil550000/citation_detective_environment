@@ -67,7 +67,7 @@ def get_llm_response(client: OpenAI, prompt: str) -> str:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": "You are a forensic peer reviewer analyzing scientific manuscripts for citation fraud. Respond with JSON only."},
+                {"role": "system", "content": "You are a forensic peer reviewer analyzing scientific manuscripts for citation fraud. You must detect ghost papers, misattributed citations, contradictions, fabricated statistics, causality reversals, selective omissions, and temporal fabrications. Always cite specific evidence from database search results in your reasoning. Respond with JSON only."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
@@ -202,15 +202,19 @@ CITATIONS:
 DATABASE SEARCH RESULTS:
 {search_history}
 
-Based on the search results, determine if any citation is:
-- A ghost paper (not found in the database at all)
-- Misattributed (wrong authors or year vs the DB entry)
-- Contradicting (the manuscript's claim contradicts what the cited paper actually says)
-- Misquoted statistic (manuscript reports a different number than the cited paper)
-- Causality reversal (paper shows only correlation, manuscript claims proven causation)
+Compare the manuscript claims against the database entries. Check for:
+1. Ghost paper: citation not found in the database at all
+2. Identity theft: wrong authors or year vs the DB entry
+3. Contradiction: manuscript claim contradicts what the cited paper actually says
+4. Misquoted statistic: manuscript reports a different number than the cited paper
+5. Causality reversal: paper shows only correlation, manuscript claims proven causation
+6. Selective omission: manuscript cherry-picks one minor finding while ignoring the paper's main negative conclusion
+7. Temporal fabrication: citation with a future year that doesn't exist in the database
+
+IMPORTANT: In your reason, cite SPECIFIC evidence. Mention exact numbers, exact author names, or exact quotes from the database that prove the issue.
 
 Respond with JSON only:
-{{"action_type": "flag_hallucination", "citation_id": <int>, "reason": "<1-2 sentence explanation>"}}
+{{"action_type": "flag_hallucination", "citation_id": <int>, "reason": "<detailed explanation citing specific evidence from database>"}}
 Or if all citations are correct:
 {{"action_type": "approve", "citation_id": -1, "reason": "All citations verified"}}"""
 

@@ -135,6 +135,7 @@ async def list_tasks():
             "task_id": task_id,
             "difficulty": scenario["difficulty"],
             "description": scenario["description"],
+            "issue_type": scenario["ground_truth"]["issue_type"],
             "action_schema": {
                 "task_id": f"string — set to '{task_id}'",
                 "action_type": "string — 'search', 'flag_hallucination', or 'approve'",
@@ -145,13 +146,12 @@ async def list_tasks():
             },
             "observation_fields": [
                 "manuscript_excerpt", "citations_list", "search_results",
-                "step_count", "task_id", "done", "reward",
+                "step_count", "task_id", "done", "reward", "metadata",
             ],
             "scoring": {
-                "correct_flag": "up to 1.0 (depends on reason quality)",
-                "wrong_flag": -0.5,
-                "approve_task_1_2": -1.0,
-                "approve_task_3": -0.5,
+                "model": "composite_three_component",
+                "formula": "BASE(0.05) + IDENTIFICATION(0..0.45) + REASON_QUALITY(0..0.40)",
+                "score_range": "(0.05, 0.90) + efficiency bonus up to +0.04",
                 "good_search": +0.1,
                 "bad_search": -0.1,
                 "max_steps": 5,
@@ -333,9 +333,14 @@ Based on the search results, determine if any citation is:
 - Contradicting (manuscript claim contradicts what the cited paper says)
 - Misquoted statistic (manuscript reports a different number than the cited paper)
 - Causality reversal (paper shows correlation only, manuscript claims proven causation)
+- Selective omission (manuscript cherry-picks one minor result, ignores the main conclusion)
+- Temporal fabrication (paper with a future date that doesn't exist in the database)
+
+Compare the manuscript claims against the actual database entries carefully.
+Look for discrepancies in numbers, conclusions, authorship, and existence.
 
 Respond with JSON only:
-{{"action_type": "flag_hallucination", "citation_id": <int>, "reason": "<1-2 sentence explanation>"}}
+{{"action_type": "flag_hallucination", "citation_id": <int>, "reason": "<detailed 1-2 sentence explanation citing specific evidence>"}}
 Or if all citations are correct:
 {{"action_type": "approve", "citation_id": -1, "reason": "All citations verified"}}"""
 

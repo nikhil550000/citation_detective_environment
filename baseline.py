@@ -2,88 +2,71 @@
 """
 Baseline inference script for the Citation Detective environment.
 
-Runs an LLM agent against all 3 tasks via the environment's HTTP API.
-Supports Gemini (default), OpenAI, and Azure OpenAI.
+Runs an LLM agent against all 7 tasks via the environment's HTTP API.
+Uses OpenAI-compatible API (HF Router, OpenAI, Azure).
 
 Usage:
-    # Against a local dev server
-    GEMINI_API_KEY=<key> python baseline.py --url http://localhost:8000
-
     # Against a deployed HF Space
-    GEMINI_API_KEY=<key> python baseline.py --url https://nikhilsai55000-citation-detective.hf.space
+    HF_TOKEN=<key> python baseline.py --url https://nikhilsai55000-citation-detective.hf.space
+
+    # Against a local dev server
+    HF_TOKEN=<key> python baseline.py --url http://localhost:7860
 
 Environment variables:
-    GEMINI_API_KEY       — Google Gemini API key (preferred)
-    OPENAI_API_KEY       — OpenAI API key (fallback)
-    AZURE_OPENAI_API_KEY — Azure OpenAI API key (fallback)
+    HF_TOKEN         — HuggingFace API token (preferred)
+    API_BASE_URL     — OpenAI-compatible API endpoint
+    MODEL_NAME       — Model identifier
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any, Dict
 
 import requests
+from openai import OpenAI
 
 
-def get_llm_response(prompt: str) -> str:
-    """Get a response from the configured LLM provider."""
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    azure_key = os.environ.get("AZURE_OPENAI_API_KEY")
+def get_client() -> tuple:
+    """Initialize the OpenAI client from env vars."""
+    api_key = os.environ.get("HF_TOKEN") or os.environ.get("API_KEY") or os.environ.get("OPENAI_API_KEY")
+    base_url = os.environ.get("API_BASE_URL") or "https://router.huggingface.co/v1"
+    model = os.environ.get("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 
-    if gemini_key:
-        import google.generativeai as genai
-        genai.configure(api_key=gemini_key)
-        model = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
-        gemini_model = genai.GenerativeModel(model)
-        response = gemini_model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0,
-                "max_output_tokens": 1024,
-                "response_mime_type": "application/json",
-            },
-        )
-        return response.text.strip()
+    if not api_key:
+        raise RuntimeError("No API key found. Set HF_TOKEN, API_KEY, or OPENAI_API_KEY.")
 
-    elif openai_key:
-        from openai import OpenAI
-        client = OpenAI(api_key=openai_key)
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o")
-        response = client.chat.completions.create(
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    return client, model
+
+
+def get_llm_response(client: OpenAI, model: str, prompt: str) -> str:
+    """Get JSON response from the LLM."""
+    try:
+        completion = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": (
+                    "You are a forensic peer reviewer analyzing scientific manuscripts "
+                    "for citation fraud. Detect ghost papers, misattributions, contradictions, "
+                    "fabricated statistics, causality reversals, selective omissions, and "
+                    "temporal fabrications. Cite specific evidence. Respond with JSON only."
+                )},
+                {"role": "user", "content": prompt},
+            ],
             temperature=0,
             max_tokens=512,
         )
-        return response.choices[0].message.content.strip()
-
-    elif azure_key:
-        from openai import AzureOpenAI
-        client = AzureOpenAI(
-            api_key=azure_key,
-            azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
-            api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01"),
-        )
-        model = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=512,
-        )
-        return response.choices[0].message.content.strip()
-
-    else:
-        raise RuntimeError(
-            "No API key found. Set GEMINI_API_KEY, OPENAI_API_KEY, or AZURE_OPENAI_API_KEY."
-        )
+        return (completion.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"  LLM error: {e}")
+        return '{"action_type": "approve", "citation_id": -1, "reason": "LLM error"}'
 
 
-def clean_json_response(raw: str) -> Dict[str, Any]:
-    """Parse LLM response, stripping markdown code fences if present."""
+def parse_action(raw: str) -> Dict[str, Any]:
+    """Parse LLM JSON response with fallback strategies."""
     if raw.startswith("```"):
         parts = raw.split("```")
         if len(parts) >= 2:
@@ -97,8 +80,6 @@ def clean_json_response(raw: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # Try to find JSON object in the response via regex
-    import re
     json_match = re.search(r'\{[^{}]*"action_type"[^{}]*\}', raw, re.DOTALL)
     if json_match:
         try:
@@ -106,7 +87,6 @@ def clean_json_response(raw: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Handle truncated JSON — extract individual fields with regex
     action_type_m = re.search(r'"action_type"\s*:\s*"([^"]+)"', raw)
     citation_id_m = re.search(r'"citation_id"\s*:\s*(\d+)', raw)
     reason_m = re.search(r'"reason"\s*:\s*"([^"]*)"', raw)
@@ -117,7 +97,7 @@ def clean_json_response(raw: str) -> Dict[str, Any]:
     }
 
 
-def run_task(base_url: str, task_id: str) -> Dict[str, Any]:
+def run_task(base_url: str, task_id: str, client: OpenAI, model: str) -> Dict[str, Any]:
     """Run the full search → flag flow for a single task."""
     # Step 1: Reset to get the scenario
     reset_resp = requests.post(
@@ -130,6 +110,8 @@ def run_task(base_url: str, task_id: str) -> Dict[str, Any]:
     manuscript = obs["manuscript_excerpt"]
     citations = obs["citations_list"]
     search_history = ""
+    step_count = 0
+    cumulative_reward = 0.0
 
     # Step 2: Search for each citation
     for citation in citations:
@@ -142,21 +124,27 @@ def run_task(base_url: str, task_id: str) -> Dict[str, Any]:
                     "action_type": "search",
                     "query": query,
                     "search_history": search_history,
+                    "step_count": step_count,
+                    "cumulative_reward": cumulative_reward,
                 }
             },
             timeout=30,
         ).json()
 
-        search_result = step_resp["observation"].get("search_results", "")
+        step_obs = step_resp.get("observation", {})
+        search_result = step_obs.get("search_results", "")
+        step_reward = step_resp.get("reward", 0.0)
         search_history += f"\n--- Search for '{query}' ---\n{search_result}\n"
+        step_count = step_obs.get("step_count", step_count + 1)
+        cumulative_reward += step_reward
 
     # Step 3: Ask LLM to analyze
-    citations_text = ""
-    for c in citations:
-        authors = ", ".join(c["authors"])
-        citations_text += f"  [{c['id']}] {c['title']} — {authors} ({c['year']})\n"
+    citations_text = "\n".join(
+        f"  [{c['id']}] {c['title']} — {', '.join(c['authors'])} ({c['year']})"
+        for c in citations
+    )
 
-    prompt = f"""You are a forensic peer reviewer. Analyze the manuscript for hallucinated citations.
+    prompt = f"""Analyze the following manuscript for citation issues.
 
 MANUSCRIPT:
 {manuscript}
@@ -167,29 +155,24 @@ CITATIONS:
 DATABASE SEARCH RESULTS:
 {search_history}
 
-Based on the search results, determine if any citation is:
-- A ghost paper (doesn't exist in the database)
-- Misattributed (wrong authors or year)
-- Contradicting (manuscript claim contradicts the cited paper)
+Compare manuscript claims against database entries. Check for:
+1. Ghost paper: citation not found in database
+2. Identity theft: wrong authors or year
+3. Contradiction: manuscript claim contradicts the cited paper
+4. Misquoted statistic: manuscript reports a different number
+5. Causality reversal: paper shows correlation only, manuscript claims causation
+6. Selective omission: manuscript cherry-picks one finding, ignores main conclusion
+7. Temporal fabrication: citation with a future year that doesn't exist
 
-Respond with JSON:
-{{
-  "action_type": "flag_hallucination",
-  "citation_id": <int>,
-  "reason": "<explanation>"
-}}
+In your reason, cite SPECIFIC evidence from the database.
 
-Or if all citations check out:
-{{
-  "action_type": "approve",
-  "citation_id": -1,
-  "reason": "All citations verified"
-}}
+Respond with JSON only:
+{{"action_type": "flag_hallucination", "citation_id": <int>, "reason": "<detailed explanation>"}}
+Or if all citations are correct:
+{{"action_type": "approve", "citation_id": -1, "reason": "All citations verified"}}"""
 
-JSON only, no other text."""
-
-    raw = get_llm_response(prompt)
-    action_dict = clean_json_response(raw)
+    raw = get_llm_response(client, model, prompt)
+    action_dict = parse_action(raw)
 
     # Step 4: Submit the terminal action
     step_resp = requests.post(
@@ -201,6 +184,8 @@ JSON only, no other text."""
                 "citation_id": action_dict.get("citation_id", -1),
                 "reason": action_dict.get("reason", ""),
                 "search_history": search_history,
+                "step_count": step_count,
+                "cumulative_reward": cumulative_reward,
             }
         },
         timeout=30,
@@ -211,7 +196,7 @@ JSON only, no other text."""
         "done": step_resp.get("done", False),
         "reward": step_resp.get("reward", 0.0),
         "action_submitted": action_dict,
-        "raw_llm_response": raw,
+        "metadata": step_resp.get("observation", {}).get("metadata", {}),
     }
 
 
@@ -219,7 +204,7 @@ def main():
     parser = argparse.ArgumentParser(description="Citation Detective baseline agent")
     parser.add_argument(
         "--url",
-        default="http://localhost:8000",
+        default="https://nikhilsai55000-citation-detective.hf.space",
         help="Base URL of the environment server",
     )
     args = parser.parse_args()
@@ -234,27 +219,33 @@ def main():
         print(f"Cannot reach server at {base_url}: {e}")
         sys.exit(1)
 
+    # Initialize LLM client
+    client, model = get_client()
+    print(f"Model: {model}\n")
+
     # Get tasks
     tasks_resp = requests.get(f"{base_url}/tasks", timeout=10).json()
     task_ids = [t["task_id"] for t in tasks_resp["tasks"]]
-    print(f"Tasks: {task_ids}\n")
+    print(f"Tasks: {task_ids} ({len(task_ids)} total)\n")
 
     # Run each task
     total_reward = 0.0
     for task_id in task_ids:
-        print(f"--- Running {task_id} ---")
-        result = run_task(base_url, task_id)
-        print(f"  Reward: {result['reward']}")
-        print(f"  Action: {result['action_submitted'].get('action_type', '?')} "
-              f"citation_id={result['action_submitted'].get('citation_id', '?')}")
-        print(f"  Reason: {result['action_submitted'].get('reason', '?')[:100]}")
-        total_reward += result["reward"]
+        print(f"--- {task_id} ---")
+        result = run_task(base_url, task_id, client, model)
+        reward = result["reward"]
+        action = result["action_submitted"]
+        print(f"  Score:  {reward:.4f}")
+        print(f"  Action: {action.get('action_type', '?')} citation_id={action.get('citation_id', '?')}")
+        print(f"  Reason: {action.get('reason', '?')[:120]}")
+        total_reward += reward
         print()
 
     avg_reward = total_reward / max(len(task_ids), 1)
-    print(f"=== Overall ===")
-    print(f"Total reward: {total_reward:.2f}")
-    print(f"Average reward: {avg_reward:.4f}")
+    print(f"{'='*50}")
+    print(f"Total score:   {total_reward:.4f}")
+    print(f"Average score: {avg_reward:.4f}")
+    print(f"All in (0,1):  {'YES' if all(0 < r['reward'] < 1 for r in [result]) else 'CHECK'}")
 
 
 if __name__ == "__main__":
