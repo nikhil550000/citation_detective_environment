@@ -1,3 +1,12 @@
+---
+title: Citation Detective
+emoji: 🔍
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+---
+
 # 🔍 Citation Detective — Forensic Peer Reviewer Environment
 
 An OpenEnv-compatible RL environment where agents act as **forensic peer reviewers**, detecting hallucinated, misattributed, and misrepresented citations in scientific manuscripts.
