@@ -1,32 +1,30 @@
-FROM python:3.10-slim
+# Use Python 3.11 slim image as base (matches reference calendar_env)
+FROM python:3.11-slim
 
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+# Set working directory
 WORKDIR /app
 
-# Install git (needed for pip install from GitHub)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy all environment code
-COPY . /app/
+# Copy requirements first for better Docker layer caching
+COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir \
-    "fastapi>=0.115.0" \
-    "uvicorn[standard]>=0.24.0" \
-    "pydantic>=2.0.0" \
-    "websockets>=11.0" \
-    "openai>=1.0.0" \
-    "requests>=2.28.0"
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Install openenv from GitHub
-RUN pip install --no-cache-dir "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git" || \
-    pip install --no-cache-dir git+https://github.com/meta-pytorch/OpenEnv.git || \
-    echo "openenv install failed, continuing"
+# Copy application code
+COPY . .
 
-# Set PYTHONPATH so imports work
-ENV PYTHONPATH="/app"
-
+# Expose port 7860 (HF Spaces default)
 EXPOSE 7860
 
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:7860/health')" || exit 1
+
+# Run the application
 CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]

@@ -1,189 +1,124 @@
----
-title: Citation Detective
-emoji: 🔬
-colorFrom: blue
-colorTo: purple
-sdk: docker
-app_port: 7860
-tags:
-  - openenv
-license: mit
----
+# 🔍 Citation Detective — Forensic Peer Reviewer Environment
 
-# Citation Detective — Forensic Peer Reviewer 🔬🔍
+An OpenEnv-compatible RL environment where agents act as **forensic peer reviewers**, detecting hallucinated, misattributed, and misrepresented citations in scientific manuscripts.
 
-An [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environment that trains AI agents to detect **hallucinated, misattributed, and contradicting citations** in scientific manuscripts.
+## Overview
 
-## Real-World Problem
+Scientific papers increasingly contain fabricated or manipulated citations — references that look legitimate but are actually ghost papers, identity thefts, contradictions, or statistical fabrications. This environment trains agents to catch these manipulations through a multi-step investigation process.
 
-Scientific citation fraud is a growing problem. LLMs often generate plausible-sounding but entirely fabricated references. Human peer reviewers struggle to verify every citation in a manuscript. This environment trains agents to perform **forensic citation review** — the critical task of cross-referencing cited papers against a database to catch:
+### Why This Matters
 
-- **Ghost Papers** — citations that don't exist at all
-- **Identity Theft** — real paper titles with wrong authors/year
-- **Contradictions** — correct citations whose conclusions are misrepresented
+- **Ghost papers** make up an estimated 2-5% of citations in predatory journals
+- **Misquoted statistics** and **causality reversals** are common in science journalism
+- An RL-trained forensic reviewer could serve as a scalable defense against citation fraud
 
-## Environment Overview
+## Task Design
 
-| Feature | Detail |
-|---------|--------|
-| **Tasks** | 3 (easy → hard) |
-| **Max Steps** | 5 per episode |
-| **Actions** | `search`, `flag_hallucination`, `approve` |
-| **Reward Range** | -1.0 to +1.0 |
-| **External APIs** | None (fully deterministic, mock database) |
-| **Spec Compliance** | Full OpenEnv Gymnasium API |
+| Task | Difficulty | Type | Description |
+|------|-----------|------|-------------|
+| 1 | Easy | Ghost Paper | A citation that is completely fabricated — the paper does not exist |
+| 2 | Medium | Identity Theft | Real paper title but wrong authors and year |
+| 3 | Hard | Contradiction | Correct citation but manuscript claim contradicts the paper |
+| 4 | Medium | Misquoted Statistic | Real paper but manuscript fabricates the numerical result |
+| 5 | Hard | Causality Reversal | Paper shows correlation only, manuscript claims causation |
+| 6 | Hard | Selective Omission | Cherry-picks one minor positive finding, ignores main negative conclusion |
+| 7 | Expert | Temporal Fabrication | Cites a future paper that doesn't exist, contradicting real research |
 
-## Tasks
+## Reward Design
 
-### Task 1 — The Ghost Paper (Easy)
-A citation references a paper that **does not exist** in the database. The agent should search the database, notice the paper is missing, and flag it.
+The grader uses a **three-component composite score** that produces values strictly in (0, 1):
 
-### Task 2 — The Identity Theft (Medium)
-A citation uses a **real paper's title** but lists **wrong authors and year**. The agent must notice the metadata mismatch by searching the database.
+```
+score = BASE(0.05) + IDENTIFICATION(0..0.45) + REASON_QUALITY(0..0.40)
+```
 
-### Task 3 — The Contradiction (Hard)
-A citation is **correctly attributed** (right title, authors, year), but the manuscript **claims the opposite** of what the cited paper actually found. The agent must read the abstract carefully.
+| Component | Values | Signal |
+|-----------|--------|--------|
+| **Base** | 0.05 | Minimum for any attempt — ensures non-zero gradient |
+| **Identification** | 0.45 correct, 0.15 wrong flag, 0.00 approve | Rewards finding the right citation |
+| **Reason Quality** | 0.40 excellent, 0.25 good, 0.15 partial, 0.05 minimal | Rewards understanding *why* it's wrong |
+
+This produces a **smooth, continuous reward signal** with natural range [0.05, 0.90] — no artificial clamping needed.
+
+### Score Examples
+- ✅ Correct citation + excellent reason: **0.90** (strong positive)
+- ✅ Correct citation + good reason: **0.75** (good signal)
+- ⚠️ Wrong citation flagged: **0.25** (mild negative)
+- ❌ Approved a hallucination: **0.05** (strong negative)
 
 ## Action Space
 
-```python
-ForensicAction(
-    task_id="task_1",           # Required — identifies the task
-    action_type="search",       # "search" | "flag_hallucination" | "approve"
-    query="Neural Pathways",    # Search query (for search actions)
-    citation_id=2,              # Citation to flag (for flag actions)
-    reason="Paper not found",   # Explanation (for flag actions)
-    search_history="...",       # Accumulated search results from prior steps
-)
-```
+| Action | Description |
+|--------|-------------|
+| `search(query)` | Query the citation database — returns matching papers with full metadata |
+| `flag_hallucination(citation_id, reason)` | Terminal — flag a specific citation as problematic with explanation |
+| `approve()` | Terminal — approve the manuscript (always wrong in this environment) |
 
-## Observation Space
+Agents can perform multiple searches before making a terminal decision, enabling a **plan → investigate → conclude** workflow.
 
-```python
-ForensicObservation(
-    manuscript_excerpt="...",   # Scientific text with [1], [2] citations
-    citations_list=[...],       # List of {id, title, authors, year} dicts
-    search_results="...",       # Database search output (after search action)
-    step_count=1,               # Steps taken so far
-    task_id="task_1",           # Current task
-    done=False,                 # Episode finished?
-    reward=0.1,                 # Current step reward
-)
-```
+## Docker (Recommended)
 
-## Reward Shaping
-
-| Action | Reward |
-|--------|--------|
-| Good search (results found) | +0.1 |
-| Bad search (no results) | -0.1 |
-| Correct flag + good reason | +1.0 |
-| Correct flag, weak reason | +0.5 to +0.7 |
-| Wrong citation flagged | -0.5 |
-| Approve (missed hallucination, Tasks 1-2) | -1.0 |
-| Approve (missed contradiction, Task 3) | -0.5 |
-
-## Quick Start
-
-### 1. Install dependencies
 ```bash
-git clone https://github.com/nikhil550000/citation_detective_environment.git
-cd citation_detective_environment
-uv sync
+cd citation_detective
+docker build -t citation-detective:latest .
+docker run --rm -p 7860:7860 citation-detective:latest
+curl http://localhost:7860/health
 ```
 
-### 2. Start the server
+## Without Docker
+
 ```bash
-uv run server
-# Or manually:
-# uvicorn server.app:app --host 0.0.0.0 --port 8000
+cd citation_detective
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+uvicorn server.app:app --host 0.0.0.0 --port 7860
 ```
 
-### 3. Reset and explore
+## Run Inference
+
 ```bash
-# Get available tasks
-curl http://localhost:8000/tasks
-
-# Reset to a task
-curl -X POST http://localhost:8000/reset \
-  -H "Content-Type: application/json" \
-  -d '{"task_id": "task_1"}'
-
-# Search the database
-curl -X POST http://localhost:8000/step \
-  -H "Content-Type: application/json" \
-  -d '{"action": {"task_id": "task_1", "action_type": "search", "query": "Neural Pathways"}}'
-
-# Flag a citation
-curl -X POST http://localhost:8000/step \
-  -H "Content-Type: application/json" \
-  -d '{"action": {"task_id": "task_1", "action_type": "flag_hallucination", "citation_id": 2, "reason": "Paper not found in database"}}'
-```
-
-### 4. Run baseline agent
-```bash
-# Create .env with your API key
-echo 'GEMINI_API_KEY=your-key-here' > .env
-
-# Run baseline
-python baseline.py --url http://localhost:8000
-```
-
-### 5. Use the standalone grader
-```bash
-curl -X POST http://localhost:8000/grader \
-  -H "Content-Type: application/json" \
-  -d '{"task_id": "task_1", "action": {"citation_id": 2, "reason": "not found"}}'
+export HF_TOKEN="your_huggingface_token"
+export API_BASE_URL="https://router.huggingface.co/v1"
+export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+python inference.py
 ```
 
 ## API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check |
-| `GET` | `/schema` | Action/Observation JSON schemas |
-| `GET` | `/tasks` | List available tasks |
-| `POST` | `/reset` | Start new episode |
-| `POST` | `/step` | Execute action |
-| `GET` | `/state` | Get current state |
-| `POST` | `/grader` | Run grader on an action |
-| `POST` | `/baseline` | Run baseline LLM agent |
-| `WS` | `/ws` | WebSocket for persistent sessions |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/reset` | POST | Start new episode with a task |
+| `/step` | POST | Execute an action (search/flag/approve) |
+| `/state` | GET | Current environment state |
+| `/schema` | GET | Action/observation JSON schemas |
+| `/tasks` | GET | List all available tasks |
+| `/grader` | POST | Grade an action for a specific task |
+| `/baseline` | POST | Run baseline agent on a task |
 
-## Project Structure
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `HF_TOKEN` | Yes (runtime) | HuggingFace API token for inference |
+| `API_BASE_URL` | Yes (runtime) | OpenAI-compatible API endpoint |
+| `MODEL_NAME` | Yes (runtime) | Model identifier |
+
+## Architecture
 
 ```
 citation_detective/
-├── models.py                              # ForensicAction & ForensicObservation
-├── client.py                              # EnvClient subclass
-├── baseline.py                            # Standalone baseline inference
-├── openenv.yaml                           # OpenEnv configuration
-├── pyproject.toml                         # Python project + dependencies
+├── Dockerfile               # Container configuration
+├── requirements.txt         # Python dependencies
+├── scenario_config.json     # Task configuration and verifiers
+├── openenv.yaml             # OpenEnv specification
+├── models.py                # Pydantic models (Action, Observation)
+├── inference.py             # Agent inference script
+├── baseline.py              # Baseline agent for testing
 ├── server/
-│   ├── app.py                             # FastAPI app + hackathon endpoints
-│   ├── citation_detective_environment.py  # Environment logic
-│   ├── graders.py                         # Mock database + grading functions
-│   └── Dockerfile                         # Container build
-└── README.md                              # This file
+│   ├── app.py               # FastAPI application
+│   ├── graders.py           # Task scenarios + grader functions
+│   └── citation_detective_environment.py  # Environment implementation
+└── README.md
 ```
-
-## Deployment to Hugging Face Spaces
-
-```bash
-# Build Docker image
-cd citation_detective
-docker build -t citation-detective:latest -f server/Dockerfile .
-
-# Or deploy directly to HF Spaces
-# (push this directory to a HF Space with the `openenv` tag)
-```
-
-## Built For
-
-**Meta PyTorch OpenEnv Hackathon × SST (India AI Hackathon 2026)** — organized by [Scaler School of Technology](https://www.scaler.com/school-of-technology/).
-
-Built as a complete OpenEnv environment submission for Round 1.
-
-## License
-
-MIT License — see [LICENSE](LICENSE) file.

@@ -90,6 +90,35 @@ MOCK_DATABASE = {
             "may independently seek more social media engagement."
         ),
     },
+    "martinez_2021": {
+        "title": "Antioxidant Supplementation and Cardiovascular Outcomes: A Randomized Trial",
+        "authors": ["Martinez, G.", "Thompson, H.", "Lewis, M."],
+        "year": 2021,
+        "abstract": (
+            "This randomized controlled trial of 3,200 participants over 5 years found "
+            "that high-dose antioxidant supplementation (vitamins C, E, and beta-carotene) "
+            "showed a modest 8% reduction in oxidative stress biomarkers (p=0.03) but "
+            "NO significant reduction in major cardiovascular events (HR=0.96, 95% CI "
+            "0.84-1.10, p=0.55). Importantly, the beta-carotene arm showed a "
+            "non-significant trend toward INCREASED all-cause mortality (HR=1.12, "
+            "p=0.08). The study concludes that antioxidant supplementation cannot be "
+            "recommended for cardiovascular disease prevention."
+        ),
+    },
+    "nakamura_2023": {
+        "title": "Quantum Error Correction in Topological Qubits: Progress and Limitations",
+        "authors": ["Nakamura, Y.", "Petrov, D."],
+        "year": 2023,
+        "abstract": (
+            "We report progress on topological qubit architectures achieving a "
+            "logical error rate of 10^-4 per gate cycle. While this represents a "
+            "100x improvement over previous surface code implementations, we show "
+            "that fault-tolerant quantum computation still requires approximately "
+            "1,000 physical qubits per logical qubit, limiting near-term practical "
+            "applications. Current systems remain far from the threshold needed for "
+            "cryptographically relevant quantum computation."
+        ),
+    },
 }
 
 
@@ -279,6 +308,87 @@ SCENARIOS = {
                 "'cannot establish causality'. The manuscript falsely claims the study "
                 "'proved' causation and calls it 'scientifically certain'. "
                 "This is a direct misrepresentation of what the paper concluded."
+            ),
+        },
+    },
+    "task_6": {
+        "difficulty": "hard",
+        "description": "The Selective Omission — manuscript cherry-picks one minor positive result while ignoring the paper's main negative conclusion.",
+        "manuscript_excerpt": (
+            "Antioxidant supplementation has emerged as a promising approach for "
+            "cardiovascular disease prevention. The landmark randomized trial by "
+            "Martinez, Thompson, and Lewis demonstrated significant benefits: their "
+            "study of 3,200 participants showed that antioxidant supplementation "
+            "significantly reduced oxidative stress biomarkers [1], providing strong "
+            "evidence for the cardioprotective effects of vitamins C, E, and "
+            "beta-carotene.\n\n"
+            "Based on these findings, the American Heart Health Foundation recommends "
+            "daily antioxidant supplementation as a primary prevention strategy. "
+            "The Martinez et al. [1] study represents the strongest clinical evidence "
+            "to date supporting this recommendation."
+        ),
+        "citations_list": [
+            {
+                "id": 1,
+                "title": "Antioxidant Supplementation and Cardiovascular Outcomes: A Randomized Trial",
+                "authors": ["Martinez, G.", "Thompson, H.", "Lewis, M."],
+                "year": 2021,
+            },
+        ],
+        "ground_truth": {
+            "hallucinated_citation_id": 1,
+            "issue_type": "selective_omission",
+            "explanation": (
+                "The manuscript cherry-picks the minor finding (8% reduction in "
+                "oxidative stress biomarkers) while completely omitting the study's "
+                "MAIN conclusion: NO significant reduction in cardiovascular events "
+                "(p=0.55) and a concerning trend toward increased mortality in the "
+                "beta-carotene arm (HR=1.12). The paper explicitly concludes that "
+                "antioxidant supplementation CANNOT be recommended for cardiovascular "
+                "disease prevention — the opposite of what the manuscript claims."
+            ),
+        },
+    },
+    "task_7": {
+        "difficulty": "expert",
+        "description": "The Temporal Fabrication — manuscript cites a paper with a future publication year that doesn't exist in the database.",
+        "manuscript_excerpt": (
+            "Recent breakthroughs in quantum computing have brought us closer than "
+            "ever to practical quantum advantage. Nakamura and Petrov's earlier work "
+            "on topological qubits demonstrated significant progress in error "
+            "correction [1]. More recently, their follow-up study published in 2025 "
+            "achieved the long-sought threshold for fault-tolerant quantum computation, "
+            "demonstrating that just 50 physical qubits per logical qubit are sufficient "
+            "for cryptographically relevant computations [2].\n\n"
+            "This breakthrough, reported in the 2025 Nakamura-Petrov paper [2], "
+            "effectively renders current encryption standards obsolete and necessitates "
+            "immediate transition to post-quantum cryptographic protocols."
+        ),
+        "citations_list": [
+            {
+                "id": 1,
+                "title": "Quantum Error Correction in Topological Qubits: Progress and Limitations",
+                "authors": ["Nakamura, Y.", "Petrov, D."],
+                "year": 2023,
+            },
+            {
+                "id": 2,
+                "title": "Fault-Tolerant Quantum Computation with Minimal Qubit Overhead",
+                "authors": ["Nakamura, Y.", "Petrov, D."],
+                "year": 2025,
+            },
+        ],
+        "ground_truth": {
+            "hallucinated_citation_id": 2,
+            "issue_type": "temporal_fabrication",
+            "explanation": (
+                "Citation [2] claims to be a 2025 publication by Nakamura and Petrov, "
+                "but no such paper exists in the database. The real 2023 paper [1] "
+                "by the same authors explicitly states that 1,000 physical qubits per "
+                "logical qubit are needed and that practical quantum computation remains "
+                "far from achievable — the exact opposite of what the fabricated 2025 "
+                "reference claims. This is both a ghost paper AND a contradiction of "
+                "the actual research."
             ),
         },
     },
@@ -583,10 +693,110 @@ def grade_task_5(action_dict: Dict[str, Any]) -> float:
 # Grader registry
 # ---------------------------------------------------------------------------
 
+def grade_task_6(action_dict: Dict[str, Any]) -> float:
+    """
+    Grade task 6 — The Selective Omission (hard).
+
+    The agent should flag citation_id=1 because the manuscript cherry-picks
+    one minor positive result (8% biomarker reduction) while omitting the
+    main conclusion (no cardiovascular benefit, possible increased mortality).
+    """
+    gt = SCENARIOS["task_6"]["ground_truth"]
+    action_type = str(action_dict.get("action_type", "")).strip().lower()
+    citation_id = action_dict.get("citation_id", -1)
+    reason = str(action_dict.get("reason", "")).strip().lower()
+
+    if action_type == "flag_hallucination" and citation_id == gt["hallucinated_citation_id"]:
+        identification = ID_CORRECT
+    elif action_type == "flag_hallucination":
+        identification = ID_WRONG_FLAG
+    else:
+        identification = ID_APPROVE
+
+    omission_keywords = ["omit", "cherry-pick", "selective", "ignore", "left out",
+                         "hide", "conceal", "incomplete", "misleading", "partial"]
+    result_keywords = ["no significant", "cardiovascular", "p=0.55", "mortality",
+                       "beta-carotene", "cannot be recommended", "8%",
+                       "not recommended", "negative"]
+
+    if identification == ID_CORRECT:
+        has_omission = any(kw in reason for kw in omission_keywords)
+        has_result = any(kw in reason for kw in result_keywords)
+        if has_omission and has_result:
+            reason_q = REASON_EXCELLENT
+        elif has_omission:
+            reason_q = REASON_GOOD
+        elif has_result:
+            reason_q = REASON_PARTIAL + 0.05  # 0.20 — knows specific details
+        elif len(reason) > 20:
+            reason_q = REASON_PARTIAL
+        else:
+            reason_q = REASON_MINIMAL
+    elif identification == ID_WRONG_FLAG:
+        reason_q = REASON_MINIMAL
+    else:
+        reason_q = 0.0
+
+    return _compute_score(identification, reason_q)
+
+
+def grade_task_7(action_dict: Dict[str, Any]) -> float:
+    """
+    Grade task 7 — The Temporal Fabrication (expert).
+
+    The agent should flag citation_id=2 because it claims to be a 2025
+    paper that doesn't exist in the database, while also contradicting
+    the real 2023 paper's findings.
+    """
+    gt = SCENARIOS["task_7"]["ground_truth"]
+    action_type = str(action_dict.get("action_type", "")).strip().lower()
+    citation_id = action_dict.get("citation_id", -1)
+    reason = str(action_dict.get("reason", "")).strip().lower()
+
+    if action_type == "flag_hallucination" and citation_id == gt["hallucinated_citation_id"]:
+        identification = ID_CORRECT
+    elif action_type == "flag_hallucination":
+        identification = ID_WRONG_FLAG
+    else:
+        identification = ID_APPROVE
+
+    temporal_keywords = ["2025", "future", "doesn't exist", "does not exist",
+                         "not found", "fabricat", "ghost", "not in database",
+                         "no record", "no such paper"]
+    contradiction_keywords = ["contradict", "1000", "1,000", "50", "opposite",
+                              "limitations", "far from", "not achievable"]
+
+    if identification == ID_CORRECT:
+        has_temporal = any(kw in reason for kw in temporal_keywords)
+        has_contradiction = any(kw in reason for kw in contradiction_keywords)
+        if has_temporal and has_contradiction:
+            reason_q = REASON_EXCELLENT
+        elif has_temporal:
+            reason_q = REASON_GOOD
+        elif has_contradiction:
+            reason_q = REASON_PARTIAL + 0.05  # 0.20
+        elif len(reason) > 20:
+            reason_q = REASON_PARTIAL
+        else:
+            reason_q = REASON_MINIMAL
+    elif identification == ID_WRONG_FLAG:
+        reason_q = REASON_MINIMAL
+    else:
+        reason_q = 0.0
+
+    return _compute_score(identification, reason_q)
+
+
+# ---------------------------------------------------------------------------
+# Grader registry
+# ---------------------------------------------------------------------------
+
 GRADERS = {
     "task_1": grade_task_1,
     "task_2": grade_task_2,
     "task_3": grade_task_3,
     "task_4": grade_task_4,
     "task_5": grade_task_5,
+    "task_6": grade_task_6,
+    "task_7": grade_task_7,
 }

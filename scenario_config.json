@@ -1,0 +1,74 @@
+{
+    "env_url": "http://localhost:7860",
+    "env_name": "citation_detective",
+    "description": "Forensic Peer Reviewer — detects hallucinated, misattributed, and misrepresented citations in scientific manuscripts",
+    "tasks": [
+        "task_1", "task_2", "task_3", "task_4", "task_5", "task_6", "task_7"
+    ],
+    "difficulty_gradient": {
+        "task_1": {
+            "difficulty": "easy",
+            "type": "ghost_paper",
+            "description": "A citation that is completely fabricated — the paper does not exist"
+        },
+        "task_2": {
+            "difficulty": "medium",
+            "type": "identity_theft",
+            "description": "Real paper title but wrong authors and year"
+        },
+        "task_3": {
+            "difficulty": "hard",
+            "type": "contradiction",
+            "description": "Correct citation but the manuscript claim contradicts the paper's findings"
+        },
+        "task_4": {
+            "difficulty": "medium",
+            "type": "misquoted_statistic",
+            "description": "Real paper but the manuscript fabricates the numerical result"
+        },
+        "task_5": {
+            "difficulty": "hard",
+            "type": "causality_reversal",
+            "description": "Paper shows correlation only but manuscript claims proven causation"
+        },
+        "task_6": {
+            "difficulty": "hard",
+            "type": "selective_omission",
+            "description": "Manuscript cites a real paper but cherry-picks one positive finding while omitting the main negative conclusion"
+        },
+        "task_7": {
+            "difficulty": "expert",
+            "type": "temporal_fabrication",
+            "description": "Manuscript cites a paper with a future publication date that doesn't exist in the database yet"
+        }
+    },
+    "expected_actions": [
+        "search",
+        "flag_hallucination",
+        "approve"
+    ],
+    "reward_design": {
+        "model": "composite_three_component",
+        "formula": "score = BASE(0.05) + IDENTIFICATION(0..0.45) + REASON_QUALITY(0..0.40)",
+        "range": "(0.05, 0.90)",
+        "components": {
+            "base": "0.05 — minimum for any attempt, ensures non-zero gradient",
+            "identification": "0.45 for correct citation, 0.15 for wrong flag, 0.0 for approve",
+            "reason_quality": "0.40 excellent, 0.25 good, 0.15 partial, 0.05 minimal"
+        }
+    },
+    "verifiers": [
+        {
+            "name": "Correct Citation Flagged",
+            "description": "Agent identifies the correct problematic citation ID from the manuscript"
+        },
+        {
+            "name": "Issue Type Identified",
+            "description": "Agent's reasoning correctly identifies the TYPE of citation manipulation"
+        },
+        {
+            "name": "Evidence-Based Reasoning",
+            "description": "Agent provides specific evidence from the database search to justify the flag"
+        }
+    ]
+}
